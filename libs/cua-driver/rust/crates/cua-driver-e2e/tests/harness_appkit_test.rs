@@ -121,14 +121,24 @@ impl Drop for Harness {
 // ── window / element helpers ─────────────────────────────────────────────────
 
 fn snapshot_elements(driver: &mut McpDriver, pid: u32, window_id: u64) -> ToolResponse {
-    driver.call(
+    let started = Instant::now();
+    let response = driver.call(
         "get_window_state",
         serde_json::json!({
             "pid": pid as i64,
             "window_id": window_id,
             "capture_mode": "ax"
         }),
-    )
+    );
+    if looks_empty(response.tree_text()) {
+        eprintln!(
+            "[diag] empty AppKit snapshot after {:?}: is_error={} structured={}",
+            started.elapsed(),
+            response.is_error(),
+            response.structured()
+        );
+    }
+    response
 }
 
 struct FrontWindow {
@@ -238,10 +248,20 @@ fn run_case(
         let mut driver = McpDriver::spawn_macos_daemon_proxy_named(&cell_id)
             .expect("start installed macOS daemon proxy");
         *evidence = recording_evidence(driver.recording_dir());
+        let launched = Instant::now();
         let harness = Harness::launch();
         let (wid, _) = driver
             .find_window(harness.pid as i64, "CuaTestHarness AppKit")
             .expect("AppKit main window not found");
+        let on_screen = driver.call(
+            "list_windows",
+            serde_json::json!({"pid": harness.pid as i64, "on_screen_only": true}),
+        );
+        eprintln!(
+            "[diag] AppKit window {wid} listed {:?} after spawn; on-screen windows: {}",
+            launched.elapsed(),
+            on_screen.structured()["windows"]
+        );
         if delivery != cua_driver_testkit::e2e::Delivery::Background {
             driver.start_behavior_recording();
         }
@@ -566,7 +586,10 @@ fn harness_appkit_smoke() {
 
             assert!(
                 !looks_empty(snap.tree_text()),
-                "required AppKit AX tree is empty"
+                "required AppKit AX tree is empty; is_error={} text={:?} structured={}",
+                snap.is_error(),
+                snap.text(),
+                snap.structured()
             );
 
             let text = snap.tree_text();
